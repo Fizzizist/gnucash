@@ -882,6 +882,65 @@ GncSqlBackend::do_db_operation (E_DB_OPERATION op, const char* table_name,
 }
 
 bool
+GncSqlBackend::do_db_operation_batch (const char* table_name,
+                                      QofIdTypeConst obj_name,
+                                      const std::vector<gpointer>& objects,
+                                      const EntryVec& table,
+                                      size_t batch_size)
+{
+    g_return_val_if_fail (table_name != nullptr, false);
+    g_return_val_if_fail (obj_name != nullptr, false);
+
+    if (objects.empty())
+        return true;
+
+    /* Build column name list once, skipping auto-increment columns. */
+    std::vector<std::string> col_names;
+    for (auto const& table_row : table)
+    {
+        if (!table_row->is_autoincr())
+            col_names.push_back(table_row->name());
+    }
+
+    size_t i = 0;
+    while (i < objects.size())
+    {
+        size_t batch_end = std::min(i + batch_size, objects.size());
+
+        std::ostringstream sql;
+        sql << "INSERT INTO " << table_name << "(";
+        for (size_t c = 0; c < col_names.size(); ++c)
+        {
+            if (c > 0) sql << ",";
+            sql << col_names[c];
+        }
+        sql << ") VALUES";
+
+        for (size_t j = i; j < batch_end; ++j)
+        {
+            PairVec values{get_object_values(obj_name, objects[j], table)};
+            if (j > i) sql << ",";
+            sql << "(";
+            for (size_t v = 0; v < values.size(); ++v)
+            {
+                if (v > 0) sql << ",";
+                sql << values[v].second;
+            }
+            sql << ")";
+        }
+
+        auto stmt = create_statement_from_sql(sql.str());
+        if (stmt == nullptr)
+            return false;
+        if (execute_nonselect_statement(stmt) == -1)
+            return false;
+
+        i = batch_end;
+    }
+    return true;
+}
+
+bool
 GncSqlBackend::save_commodity(gnc_commodity* comm) noexcept
 {
     if (comm == nullptr) return false;

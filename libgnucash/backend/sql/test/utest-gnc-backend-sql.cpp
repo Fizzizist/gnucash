@@ -29,6 +29,7 @@
 /* Add specific headers for this class */
 #include "../gnc-sql-connection.hpp"
 #include "../gnc-sql-backend.hpp"
+#include "../gnc-sql-column-table-entry.hpp"
 #include "../gnc-sql-result.hpp"
 
 static const gchar* suitename = "/backend/sql/gnc-backend-sql";
@@ -333,6 +334,149 @@ test_gnc_sql_commit_edit (void)
     qof_book_destroy (book);
     delete sql_be;
 }
+/* ================================================================= */
+/* Tests for do_db_operation_batch (ADR-0002)                        */
+
+/* A tracking connection that captures SQL strings passed to
+ * create_statement_from_sql and counts execute_nonselect_statement calls. */
+class GncCaptureSqlConnection : public GncMockSqlConnection
+{
+public:
+    mutable std::vector<std::string> captured_sql;
+    int nonselect_calls = 0;
+
+    GncSqlStatementPtr create_statement_from_sql (const std::string& sql)
+        const noexcept override
+    {
+        captured_sql.push_back (sql);
+        return std::unique_ptr<GncMockSqlStatement> (new GncMockSqlStatement);
+    }
+    int execute_nonselect_statement (const GncSqlStatementPtr&)
+        noexcept override
+    {
+        nonselect_calls++;
+        return 1;
+    }
+};
+
+/* Simple test object: a single int accessed via direct getter. */
+struct BatchTestRecord
+{
+    int val;
+};
+
+static gpointer
+get_batch_test_val (gpointer pObject)
+{
+    return GINT_TO_POINTER (static_cast<BatchTestRecord*> (pObject)->val);
+}
+
+static const EntryVec batch_test_col_table
+{
+    gnc_sql_make_table_entry<CT_INT> ("id", 0, COL_PKEY | COL_NNUL | COL_AUTOINC),
+    gnc_sql_make_table_entry<CT_INT> ("val", 0, COL_NNUL,
+                                      (QofAccessFunc)get_batch_test_val,
+                                      (QofSetterFunc)nullptr),
+};
+
+/* Test: empty object list produces no SQL statements. */
+static void
+test_do_db_operation_batch_empty (void)
+{
+    auto conn = new GncCaptureSqlConnection;
+    auto book = qof_book_new ();
+    auto sql_be = new GncMockSqlBackend{conn, book};
+
+    std::vector<gpointer> objects;
+    bool ok = sql_be->do_db_operation_batch ("test_table", "test",
+                                              objects, batch_test_col_table);
+
+    g_assert_true (ok);
+    g_assert_cmpint (conn->nonselect_calls, ==, 0);
+    g_assert_cmpuint (conn->captured_sql.size (), ==, 0u);
+
+    qof_book_destroy (book);
+    delete sql_be;  /* deletes conn via ~GncSqlBackend */
+}
+
+/* Test: N objects with batch_size K produces ceil(N/K) INSERT statements,
+ * each starting with INSERT INTO tablename(val) VALUES. */
+static void
+test_do_db_operation_batch_batching (void)
+{
+    auto conn = new GncCaptureSqlConnection;
+    auto book = qof_book_new ();
+    auto sql_be = new GncMockSqlBackend{conn, book};
+
+    std::vector<BatchTestRecord> records = {{10}, {20}, {30}, {40}, {50}};
+    std::vector<gpointer> objects;
+    for (auto& r : records)
+        objects.push_back (&r);
+
+    /* 5 rows with batch_size 2 -> 3 INSERT statements: (2)+(2)+(1) */
+    bool ok = sql_be->do_db_operation_batch ("test_table", "test",
+                                              objects, batch_test_col_table, 2);
+
+    g_assert_true (ok);
+    g_assert_cmpint (conn->nonselect_calls, ==, 3);
+    g_assert_cmpuint (conn->captured_sql.size (), ==, 3u);
+
+    const std::string prefix{"INSERT INTO test_table(val) VALUES"};
+    for (auto const& sql : conn->captured_sql)
+        g_assert_true (sql.find (prefix) == 0);
+
+    qof_book_destroy (book);
+    delete sql_be;
+}
+
+/* Test: exact batch size (N divisible by K) produces N/K statements. */
+static void
+test_do_db_operation_batch_exact_batches (void)
+{
+    auto conn = new GncCaptureSqlConnection;
+    auto book = qof_book_new ();
+    auto sql_be = new GncMockSqlBackend{conn, book};
+
+    std::vector<BatchTestRecord> records = {{1}, {2}, {3}, {4}};
+    std::vector<gpointer> objects;
+    for (auto& r : records)
+        objects.push_back (&r);
+
+    /* 4 rows with batch_size 2 -> exactly 2 INSERT statements */
+    bool ok = sql_be->do_db_operation_batch ("test_table", "test",
+                                              objects, batch_test_col_table, 2);
+
+    g_assert_true (ok);
+    g_assert_cmpint (conn->nonselect_calls, ==, 2);
+
+    qof_book_destroy (book);
+    delete sql_be;
+}
+
+/* Test: single object produces exactly one INSERT statement. */
+static void
+test_do_db_operation_batch_single (void)
+{
+    auto conn = new GncCaptureSqlConnection;
+    auto book = qof_book_new ();
+    auto sql_be = new GncMockSqlBackend{conn, book};
+
+    BatchTestRecord record{42};
+    std::vector<gpointer> objects = {&record};
+
+    bool ok = sql_be->do_db_operation_batch ("test_table", "test",
+                                              objects, batch_test_col_table, 100);
+
+    g_assert_true (ok);
+    g_assert_cmpint (conn->nonselect_calls, ==, 1);
+    g_assert_cmpuint (conn->captured_sql.size (), ==, 1u);
+    g_assert_true (conn->captured_sql[0].find ("INSERT INTO test_table(val) VALUES") == 0);
+
+    qof_book_destroy (book);
+    delete sql_be;
+}
+
+/* ================================================================= */
 /* handle_and_term
 static void
 handle_and_term (QofQueryTerm* pTerm, GString* sql)// 2
@@ -853,6 +997,10 @@ test_suite_gnc_backend_sql (void)
 // GNC_TEST_ADD (suitename, "gnc sql rollback edit", Fixture, nullptr, test_gnc_sql_rollback_edit,  teardown);
 // GNC_TEST_ADD (suitename, "commit cb", Fixture, nullptr, test_commit_cb,  teardown);
     GNC_TEST_ADD_FUNC (suitename, "gnc sql commit edit", test_gnc_sql_commit_edit);
+    GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch empty", test_do_db_operation_batch_empty);
+    GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch batching", test_do_db_operation_batch_batching);
+    GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch exact batches", test_do_db_operation_batch_exact_batches);
+    GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch single", test_do_db_operation_batch_single);
 // GNC_TEST_ADD (suitename, "handle and term", Fixture, nullptr, test_handle_and_term,  teardown);
 // GNC_TEST_ADD (suitename, "compile query cb", Fixture, nullptr, test_compile_query_cb,  teardown);
 // GNC_TEST_ADD (suitename, "gnc sql compile query", Fixture, nullptr, test_gnc_sql_compile_query,  teardown);

@@ -40,6 +40,8 @@
 #include <string>
 #include <sstream>
 #include <cstdint>
+#include <vector>
+#include <algorithm>
 
 #include "gnc-sql-connection.hpp"
 #include "gnc-sql-backend.hpp"
@@ -561,8 +563,20 @@ slot_info_copy (slot_info_t* pInfo, GncGUID* guid)
     return newSlot;
 }
 
+static const int GUID_IN_CLAUSE_LIMIT = 500;
+
+static slot_info_t
+snapshot_for_insert (const slot_info_t& src)
+{
+    slot_info_t snap = src;                          /* shallow copy; strings copy by value */
+    snap.guid = new GncGUID(*src.guid);              /* deep copy GUID */
+    snap.pKvpValue = new KvpValue(*src.pKvpValue);  /* deep copy KvpValue */
+    return snap;
+}
+
 static void
-save_slot (const char* key, KvpValue* value, slot_info_t & slot_info)
+save_slot (const char* key, KvpValue* value, slot_info_t & slot_info,
+           std::vector<slot_info_t>& accum)
 {
     g_return_if_fail (value != NULL);
 
@@ -584,13 +598,11 @@ save_slot (const char* key, KvpValue* value, slot_info_t & slot_info)
         slot_info_t* pNewInfo = slot_info_copy (&slot_info, guid);
         KvpValue* oldValue = slot_info.pKvpValue;
         slot_info.pKvpValue = new KvpValue {guid};
-        slot_info.is_ok = slot_info.be->do_db_operation(OP_DB_INSERT,
-                                                            TABLE_NAME,
-                                                            TABLE_NAME,
-                                                            &slot_info,
-                                                            col_table);
-        g_return_if_fail (slot_info.is_ok);
-        pKvpFrame->for_each_slot_temp (save_slot, *pNewInfo);
+        accum.push_back (snapshot_for_insert (slot_info));
+        auto save_cb = [&accum](const char* k, KvpValue* v, slot_info_t& info) {
+            save_slot (k, v, info, accum);
+        };
+        pKvpFrame->for_each_slot_temp (save_cb, *pNewInfo);
         delete slot_info.pKvpValue;
         slot_info.pKvpValue = oldValue;
         delete pNewInfo;
@@ -601,17 +613,12 @@ save_slot (const char* key, KvpValue* value, slot_info_t & slot_info)
         GncGUID* guid = guid_new ();
         slot_info_t* pNewInfo = slot_info_copy (&slot_info, guid);
         KvpValue* oldValue = slot_info.pKvpValue;
-        slot_info.pKvpValue = new KvpValue {guid};  // Transfer ownership!
-        slot_info.is_ok = slot_info.be->do_db_operation(OP_DB_INSERT,
-                                                            TABLE_NAME,
-                                                            TABLE_NAME,
-                                                            &slot_info,
-                                                            col_table);
-        g_return_if_fail (slot_info.is_ok);
+        slot_info.pKvpValue = new KvpValue {guid};
+        accum.push_back (snapshot_for_insert (slot_info));
         for (auto cursor = value->get<GList*> (); cursor; cursor = cursor->next)
         {
             auto val = static_cast<KvpValue*> (cursor->data);
-            save_slot ("", val, *pNewInfo);
+            save_slot ("", val, *pNewInfo, accum);
         }
         delete slot_info.pKvpValue;
         slot_info.pKvpValue = oldValue;
@@ -620,14 +627,94 @@ save_slot (const char* key, KvpValue* value, slot_info_t & slot_info)
     break;
     default:
     {
-        slot_info.is_ok = slot_info.be->do_db_operation (OP_DB_INSERT,
-                                                             TABLE_NAME,
-                                                             TABLE_NAME,
-                                                             &slot_info,
-                                                             col_table);
+        accum.push_back (snapshot_for_insert (slot_info));
     }
     break;
     }
+}
+
+static gboolean
+gnc_sql_slots_delete_batch (GncSqlBackend* sql_be, const GncGUID* guid)
+{
+    g_return_val_if_fail (sql_be != NULL, FALSE);
+    g_return_val_if_fail (guid != NULL, FALSE);
+
+    gchar guid_buf[GUID_ENCODING_LENGTH + 1];
+    (void)guid_to_string_buff (guid, guid_buf);
+
+    std::vector<std::string> all_guids;
+    all_guids.push_back (guid_buf);
+
+    std::vector<std::string> current_level;
+    current_level.push_back (guid_buf);
+
+    while (!current_level.empty())
+    {
+        std::vector<std::string> next_level;
+
+        for (size_t offset = 0; offset < current_level.size();
+             offset += GUID_IN_CLAUSE_LIMIT)
+        {
+            size_t end = std::min (offset + (size_t)GUID_IN_CLAUSE_LIMIT,
+                                   current_level.size());
+            std::ostringstream sql;
+            sql << "SELECT guid_val FROM " << TABLE_NAME
+                << " WHERE obj_guid IN (";
+            for (size_t i = offset; i < end; ++i)
+            {
+                if (i > offset) sql << ",";
+                sql << "'" << current_level[i] << "'";
+            }
+            sql << ") AND slot_type IN ('"
+                << (int)KvpValue::Type::FRAME << "','"
+                << (int)KvpValue::Type::GLIST
+                << "') AND guid_val IS NOT NULL";
+
+            auto stmt = sql_be->create_statement_from_sql (sql.str());
+            if (stmt == nullptr)
+                continue;
+            auto result = sql_be->execute_select_statement (stmt);
+            if (result == nullptr)
+                continue;
+            for (auto row : *result)
+            {
+                const GncSqlColumnTableEntryPtr table_row =
+                    col_table[guid_val_col];
+                auto val = row.get_string_at_col (table_row->name());
+                if (val && !val->empty())
+                {
+                    next_level.push_back (*val);
+                    all_guids.push_back (*val);
+                }
+            }
+            delete result;
+        }
+
+        current_level = std::move (next_level);
+    }
+
+    for (size_t offset = 0; offset < all_guids.size();
+         offset += GUID_IN_CLAUSE_LIMIT)
+    {
+        size_t end = std::min (offset + (size_t)GUID_IN_CLAUSE_LIMIT,
+                               all_guids.size());
+        std::ostringstream sql;
+        sql << "DELETE FROM " << TABLE_NAME << " WHERE obj_guid IN (";
+        for (size_t i = offset; i < end; ++i)
+        {
+            if (i > offset) sql << ",";
+            sql << "'" << all_guids[i] << "'";
+        }
+        sql << ")";
+
+        auto stmt = sql_be->create_statement_from_sql (sql.str());
+        if (stmt == nullptr)
+            return FALSE;
+        if (sql_be->execute_nonselect_statement (stmt) == -1)
+            return FALSE;
+    }
+
+    return TRUE;
 }
 
 gboolean
@@ -645,12 +732,34 @@ gnc_sql_slots_save (GncSqlBackend* sql_be, const GncGUID* guid, gboolean is_infa
     // If this is not saving into a new db, clear out the old saved slots first
     if (!sql_be->pristine() && !is_infant)
     {
-        (void)gnc_sql_slots_delete (sql_be, guid);
+        (void)gnc_sql_slots_delete_batch (sql_be, guid);
     }
 
     slot_info.be = sql_be;
     slot_info.guid = guid;
-    pFrame->for_each_slot_temp (save_slot, slot_info);
+
+    std::vector<slot_info_t> accum;
+    auto save_cb = [&accum](const char* key, KvpValue* value,
+                            slot_info_t& info) {
+        save_slot (key, value, info, accum);
+    };
+    pFrame->for_each_slot_temp (save_cb, slot_info);
+
+    if (slot_info.is_ok && !accum.empty())
+    {
+        std::vector<gpointer> ptrs;
+        ptrs.reserve (accum.size());
+        for (auto& s : accum)
+            ptrs.push_back (&s);
+        slot_info.is_ok = sql_be->do_db_operation_batch (
+            TABLE_NAME, TABLE_NAME, ptrs, col_table);
+    }
+
+    for (auto& s : accum)
+    {
+        delete s.guid;
+        delete s.pKvpValue;
+    }
 
     return slot_info.is_ok;
 }
