@@ -227,18 +227,22 @@ public:
     /**
      * Performs multi-row INSERT operations in batches.
      *
+     * String values are escaped by the column table entry's add_to_query()
+     * (via quote_string()), the same path used by build_insert_statement().
+     *
      * @param table_name SQL table name
      * @param obj_name QOF object type name
      * @param objects Vector of objects to insert
      * @param table DB table description
-     * @param batch_size Number of rows per INSERT statement
+     * @param batch_size Rows per INSERT statement; 100 is conservative (~20KB
+     *        per statement, well under PostgreSQL/MySQL/SQLite limits)
      * @return TRUE if all batches succeeded, FALSE on first failure
      */
     bool do_db_operation_batch (const char* table_name,
                                 QofIdTypeConst obj_name,
                                 const std::vector<gpointer>& objects,
                                 const EntryVec& table,
-                                size_t batch_size = 100);
+                                size_t batch_size = 100) noexcept;
     /**
      * Ensure that a commodity referenced in another object is in fact saved
      * in the database.

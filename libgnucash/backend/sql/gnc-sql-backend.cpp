@@ -34,7 +34,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <stdexcept>
 
 #include "gnc-sql-connection.hpp"
 #include "gnc-sql-backend.hpp"
@@ -887,7 +886,7 @@ GncSqlBackend::do_db_operation_batch (const char* table_name,
                                       QofIdTypeConst obj_name,
                                       const std::vector<gpointer>& objects,
                                       const EntryVec& table,
-                                      size_t batch_size)
+                                      size_t batch_size) noexcept
 {
     g_return_val_if_fail (table_name != nullptr, false);
     g_return_val_if_fail (obj_name != nullptr, false);

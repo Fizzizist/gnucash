@@ -31,6 +31,8 @@
 #include "../gnc-sql-backend.hpp"
 #include "../gnc-sql-column-table-entry.hpp"
 #include "../gnc-sql-result.hpp"
+#include "../gnc-slots-sql.h"
+#include <queue>
 
 static const gchar* suitename = "/backend/sql/gnc-backend-sql";
 void test_suite_gnc_backend_sql (void);
@@ -975,6 +977,191 @@ test_gnc_sql_finalize_version_info (Fixture *fixture, gconstpointer pData)
 {
 }*/
 
+/* ================================================================= */
+/* Tests for gnc_sql_slots_delete (→ gnc_sql_slots_delete_batch, ADR-0002) */
+
+/**
+ * A GncSqlResult that returns a fixed list of GUID strings, one per row,
+ * for the "guid_val" column.  Iteration terminates correctly with a null
+ * sentinel row (m_iter == nullptr), matching the protocol documented in
+ * gnc-sql-result.hpp.
+ */
+class GncGuidListSqlResult : public GncSqlResult
+{
+public:
+    explicit GncGuidListSqlResult (std::vector<std::string> guids = {})
+        : m_guids{std::move (guids)}, m_iter{this},
+          m_row{&m_iter}, m_sentinel{nullptr} {}
+
+    uint64_t size () const noexcept override { return m_guids.size (); }
+    GncSqlRow& begin () override
+    {
+        m_cur = 0;
+        return m_guids.empty () ? m_sentinel : m_row;
+    }
+    GncSqlRow& end () override { return m_sentinel; }
+
+private:
+    std::vector<std::string> m_guids;
+    size_t m_cur = 0;
+
+    class Iter : public GncSqlResult::IteratorImpl
+    {
+    public:
+        explicit Iter (GncGuidListSqlResult* res) : m_res{res} {}
+        GncSqlRow& operator++ () override
+        {
+            ++m_res->m_cur;
+            return (m_res->m_cur < m_res->m_guids.size ())
+                ? m_res->m_row : m_res->m_sentinel;
+        }
+        GncSqlResult* operator* () override { return m_res; }
+        std::optional<int64_t>    get_int_at_col    (const char*) const override { return std::nullopt; }
+        std::optional<double>     get_float_at_col  (const char*) const override { return std::nullopt; }
+        std::optional<double>     get_double_at_col (const char*) const override { return std::nullopt; }
+        std::optional<time64>     get_time64_at_col (const char*) const override { return std::nullopt; }
+        bool is_col_null (const char*) const noexcept override { return true; }
+        std::optional<std::string> get_string_at_col (const char* col) const override
+        {
+            if (std::string{col} == "guid_val" &&
+                m_res->m_cur < m_res->m_guids.size ())
+                return m_res->m_guids[m_res->m_cur];
+            return std::nullopt;
+        }
+    private:
+        GncGuidListSqlResult* m_res;
+    };
+
+    Iter       m_iter;
+    GncSqlRow  m_row;
+    GncSqlRow  m_sentinel;
+};
+
+/**
+ * A connection that captures SQL and dispenses pre-queued SELECT results.
+ * Each call to execute_select_statement pops one entry from select_queue.
+ * When the queue is empty it returns an empty result set.
+ */
+class GncSequencedSqlConnection : public GncMockSqlConnection
+{
+public:
+    std::queue<std::vector<std::string>> select_queue;
+    mutable std::vector<std::string>    captured_sql;
+    int nonselect_calls = 0;
+
+    GncSqlStatementPtr create_statement_from_sql (const std::string& sql)
+        const noexcept override
+    {
+        captured_sql.push_back (sql);
+        return std::unique_ptr<GncMockSqlStatement> (new GncMockSqlStatement);
+    }
+    GncSqlResultPtr execute_select_statement (const GncSqlStatementPtr&)
+        noexcept override
+    {
+        if (select_queue.empty ())
+            return new GncGuidListSqlResult{};
+        auto guids = select_queue.front ();
+        select_queue.pop ();
+        return new GncGuidListSqlResult{std::move (guids)};
+    }
+    int execute_nonselect_statement (const GncSqlStatementPtr&)
+        noexcept override
+    {
+        nonselect_calls++;
+        return 1;
+    }
+};
+
+/* Helper: make a GUID string suitable for use in tests. */
+static std::string
+make_test_guid_str (void)
+{
+    GncGUID g = guid_new_return ();
+    gchar buf[GUID_ENCODING_LENGTH + 1];
+    guid_to_string_buff (&g, buf);
+    return buf;
+}
+
+/* Test: flat slot tree (no FRAME children) → one SELECT, one DELETE. */
+static void
+test_gnc_sql_slots_delete_flat (void)
+{
+    auto conn = new GncSequencedSqlConnection;
+    /* First SELECT returns no children; no more SELECTs needed. */
+    conn->select_queue.push ({});
+
+    auto book = qof_book_new ();
+    auto sql_be = new GncMockSqlBackend{conn, book};
+
+    GncGUID root = guid_new_return ();
+    gboolean ok = gnc_sql_slots_delete (sql_be, &root);
+
+    g_assert_true (ok);
+    /* One SELECT for level-0 children, one DELETE for the root. */
+    int selects = 0, deletes = 0;
+    for (auto const& sql : conn->captured_sql)
+    {
+        if (sql.find ("SELECT") != std::string::npos) selects++;
+        if (sql.find ("DELETE") != std::string::npos) deletes++;
+    }
+    g_assert_cmpint (selects, ==, 1);
+    g_assert_cmpint (deletes, ==, 1);
+    g_assert_cmpint (conn->nonselect_calls, ==, 1);
+
+    qof_book_destroy (book);
+    delete sql_be;
+}
+
+/* Test: one level of nesting (two FRAME children, no grandchildren).
+ * Expected: 2 SELECTs (level-0, level-1) + 1 DELETE for all 3 GUIDs. */
+static void
+test_gnc_sql_slots_delete_nested (void)
+{
+    std::string g1 = make_test_guid_str ();
+    std::string g2 = make_test_guid_str ();
+
+    auto conn = new GncSequencedSqlConnection;
+    conn->select_queue.push ({g1, g2}); /* level-0: root has 2 children */
+    conn->select_queue.push ({});       /* level-1: children have no children */
+
+    auto book = qof_book_new ();
+    auto sql_be = new GncMockSqlBackend{conn, book};
+
+    GncGUID root = guid_new_return ();
+    gboolean ok = gnc_sql_slots_delete (sql_be, &root);
+
+    g_assert_true (ok);
+
+    int selects = 0, deletes = 0;
+    for (auto const& sql : conn->captured_sql)
+    {
+        if (sql.find ("SELECT") != std::string::npos) selects++;
+        if (sql.find ("DELETE") != std::string::npos) deletes++;
+    }
+    g_assert_cmpint (selects, ==, 2);
+    g_assert_cmpint (deletes, ==, 1);
+    g_assert_cmpint (conn->nonselect_calls, ==, 1);
+
+    /* All three GUIDs must appear in the DELETE statement. */
+    gchar root_buf[GUID_ENCODING_LENGTH + 1];
+    guid_to_string_buff (&root, root_buf);
+    bool found_delete = false;
+    for (auto const& sql : conn->captured_sql)
+    {
+        if (sql.find ("DELETE") == std::string::npos) continue;
+        g_assert_true (sql.find (root_buf) != std::string::npos);
+        g_assert_true (sql.find (g1) != std::string::npos);
+        g_assert_true (sql.find (g2) != std::string::npos);
+        found_delete = true;
+    }
+    g_assert_true (found_delete);
+
+    qof_book_destroy (book);
+    delete sql_be;
+}
+
+/* ================================================================= */
+
 void
 test_suite_gnc_backend_sql (void)
 {
@@ -1001,6 +1188,8 @@ test_suite_gnc_backend_sql (void)
     GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch batching", test_do_db_operation_batch_batching);
     GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch exact batches", test_do_db_operation_batch_exact_batches);
     GNC_TEST_ADD_FUNC (suitename, "do_db_operation_batch single", test_do_db_operation_batch_single);
+    GNC_TEST_ADD_FUNC (suitename, "gnc_sql_slots_delete flat", test_gnc_sql_slots_delete_flat);
+    GNC_TEST_ADD_FUNC (suitename, "gnc_sql_slots_delete nested", test_gnc_sql_slots_delete_nested);
 // GNC_TEST_ADD (suitename, "handle and term", Fixture, nullptr, test_handle_and_term,  teardown);
 // GNC_TEST_ADD (suitename, "compile query cb", Fixture, nullptr, test_compile_query_cb,  teardown);
 // GNC_TEST_ADD (suitename, "gnc sql compile query", Fixture, nullptr, test_gnc_sql_compile_query,  teardown);

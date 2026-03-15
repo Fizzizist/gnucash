@@ -40,6 +40,7 @@
 #include <string>
 #include <sstream>
 #include <cstdint>
+#include <memory>
 #include <vector>
 #include <algorithm>
 
@@ -568,9 +569,13 @@ static const int GUID_IN_CLAUSE_LIMIT = 500;
 static slot_info_t
 snapshot_for_insert (const slot_info_t& src)
 {
-    slot_info_t snap = src;                          /* shallow copy; strings copy by value */
-    snap.guid = new GncGUID(*src.guid);              /* deep copy GUID */
-    snap.pKvpValue = new KvpValue(*src.pKvpValue);  /* deep copy KvpValue */
+    slot_info_t snap = src;                    /* shallow copy; strings copy by value */
+    snap.guid = new GncGUID(*src.guid);        /* deep copy GUID */
+    /* KvpValueImpl::duplicate() deep-copies all pointer members:
+     * GncGUID* via guid_copy(), const char* via g_strdup(),
+     * GList* via kvp_glist_copy(), KvpFrame* via new KvpFrame().
+     * No aliasing or use-after-free risk. */
+    snap.pKvpValue = new KvpValue(*src.pKvpValue);
     return snap;
 }
 
@@ -673,8 +678,9 @@ gnc_sql_slots_delete_batch (GncSqlBackend* sql_be, const GncGUID* guid)
             auto stmt = sql_be->create_statement_from_sql (sql.str());
             if (stmt == nullptr)
                 continue;
-            auto result = sql_be->execute_select_statement (stmt);
-            if (result == nullptr)
+            std::unique_ptr<GncSqlResult> result{
+                sql_be->execute_select_statement (stmt)};
+            if (!result)
                 continue;
             for (auto row : *result)
             {
@@ -683,16 +689,20 @@ gnc_sql_slots_delete_batch (GncSqlBackend* sql_be, const GncGUID* guid)
                 auto val = row.get_string_at_col (table_row->name());
                 if (val && !val->empty())
                 {
-                    /* Validate the GUID string before interpolating into SQL. */
+                    /* Validate and re-serialize the GUID: use the canonical
+                     * hex string from guid_to_string_buff rather than the
+                     * raw database string, so no payload can survive even
+                     * if string_to_guid accepted something unexpected. */
                     GncGUID child_guid;
                     if (string_to_guid (val->c_str(), &child_guid))
                     {
-                        next_level.push_back (*val);
-                        all_guids.push_back (*val);
+                        gchar child_buf[GUID_ENCODING_LENGTH + 1];
+                        guid_to_string_buff (&child_guid, child_buf);
+                        next_level.push_back (child_buf);
+                        all_guids.push_back (child_buf);
                     }
                 }
             }
-            delete result;
         }
 
         current_level = std::move (next_level);
@@ -756,15 +766,8 @@ gnc_sql_slots_save (GncSqlBackend* sql_be, const GncGUID* guid, gboolean is_infa
         ptrs.reserve (accum.size());
         for (auto& s : accum)
             ptrs.push_back (&s);
-        try
-        {
-            slot_info.is_ok = sql_be->do_db_operation_batch (
-                TABLE_NAME, TABLE_NAME, ptrs, col_table);
-        }
-        catch (...)
-        {
-            slot_info.is_ok = FALSE;
-        }
+        slot_info.is_ok = sql_be->do_db_operation_batch (
+            TABLE_NAME, TABLE_NAME, ptrs, col_table);
     }
 
     for (auto& s : accum)
