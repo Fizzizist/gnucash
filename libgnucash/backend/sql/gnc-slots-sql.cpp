@@ -683,8 +683,13 @@ gnc_sql_slots_delete_batch (GncSqlBackend* sql_be, const GncGUID* guid)
                 auto val = row.get_string_at_col (table_row->name());
                 if (val && !val->empty())
                 {
-                    next_level.push_back (*val);
-                    all_guids.push_back (*val);
+                    /* Validate the GUID string before interpolating into SQL. */
+                    GncGUID child_guid;
+                    if (string_to_guid (val->c_str(), &child_guid))
+                    {
+                        next_level.push_back (*val);
+                        all_guids.push_back (*val);
+                    }
                 }
             }
             delete result;
@@ -751,8 +756,15 @@ gnc_sql_slots_save (GncSqlBackend* sql_be, const GncGUID* guid, gboolean is_infa
         ptrs.reserve (accum.size());
         for (auto& s : accum)
             ptrs.push_back (&s);
-        slot_info.is_ok = sql_be->do_db_operation_batch (
-            TABLE_NAME, TABLE_NAME, ptrs, col_table);
+        try
+        {
+            slot_info.is_ok = sql_be->do_db_operation_batch (
+                TABLE_NAME, TABLE_NAME, ptrs, col_table);
+        }
+        catch (...)
+        {
+            slot_info.is_ok = FALSE;
+        }
     }
 
     for (auto& s : accum)
@@ -767,42 +779,7 @@ gnc_sql_slots_save (GncSqlBackend* sql_be, const GncGUID* guid, gboolean is_infa
 gboolean
 gnc_sql_slots_delete (GncSqlBackend* sql_be, const GncGUID* guid)
 {
-    gchar* buf;
-    gchar guid_buf[GUID_ENCODING_LENGTH + 1];
-    slot_info_t slot_info = { NULL, NULL, TRUE, NULL, KvpValue::Type::INVALID,
-                              NULL, FRAME, NULL, "" };
-
-    g_return_val_if_fail (sql_be != NULL, FALSE);
-    g_return_val_if_fail (guid != NULL, FALSE);
-
-    (void)guid_to_string_buff (guid, guid_buf);
-
-    buf = g_strdup_printf ("SELECT * FROM %s WHERE obj_guid='%s' and slot_type in ('%d', '%d') and not guid_val is null",
-                           TABLE_NAME, guid_buf, KvpValue::Type::FRAME, KvpValue::Type::GLIST);
-    auto stmt = sql_be->create_statement_from_sql(buf);
-    g_free (buf);
-    if (stmt != nullptr)
-    {
-        auto result = sql_be->execute_select_statement(stmt);
-        for (auto row : *result)
-        {
-            const GncSqlColumnTableEntryPtr table_row =
-                    col_table[guid_val_col];
-            GncGUID child_guid;
-            auto val = row.get_string_at_col (table_row->name());
-            if (val && string_to_guid (val->c_str(), &child_guid))
-                gnc_sql_slots_delete (sql_be, &child_guid);
-        }
-    }
-
-    slot_info.be = sql_be;
-    slot_info.guid = guid;
-    slot_info.is_ok = TRUE;
-    slot_info.is_ok = sql_be->do_db_operation(OP_DB_DELETE, TABLE_NAME,
-                                              TABLE_NAME, &slot_info,
-                                              obj_guid_col_table);
-
-    return slot_info.is_ok;
+    return gnc_sql_slots_delete_batch (sql_be, guid);
 }
 
 static void

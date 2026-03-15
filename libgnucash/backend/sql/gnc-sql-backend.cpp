@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
 
 #include "gnc-sql-connection.hpp"
 #include "gnc-sql-backend.hpp"
@@ -919,6 +920,7 @@ GncSqlBackend::do_db_operation_batch (const char* table_name,
         for (size_t j = i; j < batch_end; ++j)
         {
             PairVec values{get_object_values(obj_name, objects[j], table)};
+            assert(values.size() == col_names.size());
             if (j > i) sql << ",";
             sql << "(";
             for (size_t v = 0; v < values.size(); ++v)
