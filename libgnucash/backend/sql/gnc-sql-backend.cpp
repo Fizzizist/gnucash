@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <unordered_map>
 
 #include "gnc-sql-connection.hpp"
 #include "gnc-sql-backend.hpp"
@@ -919,13 +920,21 @@ GncSqlBackend::do_db_operation_batch (const char* table_name,
         for (size_t j = i; j < batch_end; ++j)
         {
             PairVec values{get_object_values(obj_name, objects[j], table)};
-            assert(values.size() == col_names.size());
+            /* Nullable columns are absent from values when their getter
+             * returns null (add_to_query skips them).  Build a name→value
+             * map so we can emit NULL for every absent column, keeping the
+             * column list and value tuple widths in sync across all rows. */
+            std::unordered_map<std::string, std::string> val_map;
+            for (auto const& p : values)
+                val_map[p.first] = p.second;
+
             if (j > i) sql << ",";
             sql << "(";
-            for (size_t v = 0; v < values.size(); ++v)
+            for (size_t c = 0; c < col_names.size(); ++c)
             {
-                if (v > 0) sql << ",";
-                sql << values[v].second;
+                if (c > 0) sql << ",";
+                auto it = val_map.find (col_names[c]);
+                sql << (it != val_map.end () ? it->second : "NULL");
             }
             sql << ")";
         }
