@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cassert>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "gnc-sql-connection.hpp"
 #include "gnc-sql-backend.hpp"
@@ -895,19 +896,36 @@ GncSqlBackend::do_db_operation_batch (const char* table_name,
     if (objects.empty())
         return true;
 
-    /* Build column name list once, skipping auto-increment columns. */
-    std::vector<std::string> col_names;
-    for (auto const& table_row : table)
-    {
-        if (!table_row->is_autoincr())
-            col_names.push_back(table_row->name());
-    }
-
     size_t i = 0;
     while (i < objects.size())
     {
         size_t batch_end = std::min(i + batch_size, objects.size());
 
+        /* Pass 1: materialise every row's PairVec and build the union of
+         * actual SQL column names for this batch.
+         *
+         * table_row->name() is the metadata name (e.g. "numeric_val"), NOT
+         * the SQL column name.  CT_NUMERIC expands to two SQL columns
+         * ("numeric_val_num", "numeric_val_denom"); other multi-column types
+         * behave similarly.  Nullable columns are absent from a row's PairVec
+         * when their getter returns null.  The only reliable source of SQL
+         * column names is the PairVec first-elements from add_to_query().
+         *
+         * The union ensures every row in the VALUES clause has the same
+         * column count; rows that lack a column get NULL. */
+        std::vector<PairVec> batch_values;
+        batch_values.reserve (batch_end - i);
+        std::vector<std::string> col_names;
+        std::unordered_set<std::string> col_name_set;
+        for (size_t j = i; j < batch_end; ++j)
+        {
+            batch_values.push_back (get_object_values (obj_name, objects[j], table));
+            for (auto const& p : batch_values.back ())
+                if (col_name_set.insert (p.first).second)
+                    col_names.push_back (p.first);
+        }
+
+        /* Pass 2: emit the INSERT statement. */
         std::ostringstream sql;
         sql << "INSERT INTO " << table_name << "(";
         for (size_t c = 0; c < col_names.size(); ++c)
@@ -917,18 +935,13 @@ GncSqlBackend::do_db_operation_batch (const char* table_name,
         }
         sql << ") VALUES";
 
-        for (size_t j = i; j < batch_end; ++j)
+        for (size_t j = 0; j < batch_values.size(); ++j)
         {
-            PairVec values{get_object_values(obj_name, objects[j], table)};
-            /* Nullable columns are absent from values when their getter
-             * returns null (add_to_query skips them).  Build a name→value
-             * map so we can emit NULL for every absent column, keeping the
-             * column list and value tuple widths in sync across all rows. */
             std::unordered_map<std::string, std::string> val_map;
-            for (auto const& p : values)
+            for (auto const& p : batch_values[j])
                 val_map[p.first] = p.second;
 
-            if (j > i) sql << ",";
+            if (j > 0) sql << ",";
             sql << "(";
             for (size_t c = 0; c < col_names.size(); ++c)
             {
@@ -939,10 +952,10 @@ GncSqlBackend::do_db_operation_batch (const char* table_name,
             sql << ")";
         }
 
-        auto stmt = create_statement_from_sql(sql.str());
+        auto stmt = create_statement_from_sql (sql.str());
         if (stmt == nullptr)
             return false;
-        if (execute_nonselect_statement(stmt) == -1)
+        if (execute_nonselect_statement (stmt) == -1)
             return false;
 
         i = batch_end;
