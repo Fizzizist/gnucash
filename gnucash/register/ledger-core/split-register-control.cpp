@@ -936,7 +936,10 @@ gnc_split_register_auto_completion (SplitRegister *reg,
                                          gnc_get_current_book ());
         g_assert (pending_trans == trans);
 
-        gnc_copy_trans_onto_trans (auto_trans, trans, FALSE, FALSE);
+        Account *template_account = xaccAccountLookup (&info->template_account,
+                                                       gnc_get_current_book ());
+
+        gnc_copy_trans_onto_trans (auto_trans, trans, FALSE, template_account, FALSE);
         /* if there is a doclink, let's clear it */
         if (xaccTransGetDocLink (auto_trans) != NULL)
             xaccTransSetDocLink (trans, "");

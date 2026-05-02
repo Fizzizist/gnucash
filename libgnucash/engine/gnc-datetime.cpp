@@ -381,13 +381,12 @@ static std::optional<PTime>
 fast_iso8601_utc_parse (const char* str)
 {
     int32_t year, month, mday, hour, min, sec;
-
-    // parse the first 4 bytes into year
-    if (!str || !parse_chars_into_num (str, str + 4, year))
-        return {};
+    const size_t len = str ? strnlen (str, 26) : 0;
 
     // parse iso-8601 utc format "YYYY-MM-DD HH:MM:SS +0000"
-    if (str[4] == '-' &&
+    constexpr size_t expanded_iso_string_len = 25;
+    if (len == expanded_iso_string_len &&
+        parse_chars_into_num (str,      str +  4, year)  && str[ 4] == '-' &&
         parse_chars_into_num (str +  5, str +  7, month) && str[ 7] == '-' &&
         parse_chars_into_num (str +  8, str + 10, mday)  && str[10] == ' ' &&
         parse_chars_into_num (str + 11, str + 13, hour)  && str[13] == ':' &&
@@ -400,12 +399,14 @@ fast_iso8601_utc_parse (const char* str)
     }
 
     // parse compressed iso-8601 format "YYYYMMDDHHMMSS"
-    if (parse_chars_into_num (str +  4, str +  6, month) &&
+    constexpr size_t compact_iso_string_len = 14;
+    if (len == compact_iso_string_len &&
+        parse_chars_into_num (str,      str +  4, year)  &&
+        parse_chars_into_num (str +  4, str +  6, month) &&
         parse_chars_into_num (str +  6, str +  8, mday)  &&
         parse_chars_into_num (str +  8, str + 10, hour)  &&
         parse_chars_into_num (str + 10, str + 12, min)   &&
-        parse_chars_into_num (str + 12, str + 14, sec)   &&
-        str[14] == '\0')
+        parse_chars_into_num (str + 12, str + 14, sec))
     {
         return PTime (boost::gregorian::date (year, month, mday),
                       boost::posix_time::time_duration (hour, min, sec));
@@ -538,9 +539,9 @@ win_date_format(std::string format, struct tm tm)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     wchar_t buf[DATEBUFLEN];
-    memset(buf, 0, DATEBUFLEN);
+    memset(buf, 0, DATEBUFLEN * sizeof(wchar_t));
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> conv;
-    auto numchars = wcsftime(buf, DATEBUFLEN - 1, conv.from_bytes(format).c_str(), &tm);
+    [[maybe_unused]] auto numchars = wcsftime(buf, DATEBUFLEN - 1, conv.from_bytes(format).c_str(), &tm);
     return conv.to_bytes(buf);
 #pragma GCC diagnostic pop
 }

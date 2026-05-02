@@ -222,12 +222,12 @@ TimeZoneProvider::load_windows_dynamic_tz (HKEY key, time_zone_names names)
 	}
 	m_zone_vector.push_back (std::make_pair(max_year, tz));
    }
-    catch (std::invalid_argument)
+    catch (const std::invalid_argument& err)
     {
 	RegCloseKey (key);
 	throw;
     }
-    catch (std::bad_alloc)
+    catch (const std::bad_alloc& err)
     {
 	RegCloseKey (key);
 	throw;
@@ -249,7 +249,7 @@ TimeZoneProvider::load_windows_classic_tz (HKEY key, time_zone_names names)
 		std::make_pair(max_year, zone_from_regtzi (regtzi, names)));
 	}
     }
-    catch (std::bad_alloc)
+    catch (const std::bad_alloc& err)
     {
 	RegCloseKey (key);
 	throw;

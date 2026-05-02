@@ -21,7 +21,7 @@ if (POLICY CMP0177)
 endif()
 
 project (gnucash
-    VERSION 5.14
+    VERSION 5.15
 )
 
 enable_testing()
@@ -174,7 +174,7 @@ endif()
 # Distribution tarballs have this file in the source tree
 # Git checkouts or zipfiles downloaded straight from github won't have it
 # and require us to build it.
-if (BUILDING_FROM_VCS OR NOT EXISTS "${CMAKE_SOURCE_DIR}/libgnucash/core-utilsgnc-vcs-info.h")
+if (BUILDING_FROM_VCS OR NOT EXISTS "${CMAKE_SOURCE_DIR}/libgnucash/core-utils/gnc-vcs-info.h")
   set(VCS_INFO_BASE_DIR ${CMAKE_BINARY_DIR})
   set(GENERATE_VCS_INFO "Yes")
 else()
@@ -644,7 +644,7 @@ if (UNIX)
 endif()
 if (MINGW)
   set( CMAKE_C_FLAGS "-Werror -Wall -Wmissing-prototypes -Wmissing-declarations ${CMAKE_C_FLAGS}")
-  set( CMAKE_CXX_FLAGS "-DWINVER=0x0500 -D_EMULATE_GLIBC=0 ${CMAKE_CXX_FLAGS}") # Workaround for bug in gtest on mingw, see https://github.com/google/googletest/issues/893 and https://github.com/google/googletest/issues/920
+  set( CMAKE_CXX_FLAGS "-Werror -Wall -Wmissing-declarations -DWINVER=0x0A00 ${CMAKE_CXX_FLAGS}") # Workaround for bug in gtest on mingw, see https://github.com/google/googletest/issues/893 and https://github.com/google/googletest/issues/920
 endif()
 
 if (APPLE)
@@ -763,6 +763,7 @@ set(gnucash_DOCS
     ChangeLog.2022
     ChangeLog.2023
     ChangeLog.2024
+    ChangeLog.2025
     DOCUMENTERS
     HACKING
     LICENSE
@@ -920,7 +921,7 @@ add_subdirectory(cmake)
 
 if (BUILDING_FROM_VCS)
     add_custom_target(ChangeLog ALL
-        COMMAND ${GIT_EXECUTABLE} log --format=\"%ad %aN %n%n%x09* %s%d%n\" --date=short --since=2025-01-01 > ${CMAKE_BINARY_DIR}/ChangeLog
+        COMMAND ${GIT_EXECUTABLE} log --format=\"%ad %aN %n%n%x09* %s%d%n\" --date=short --since=2026-01-01 > ${CMAKE_BINARY_DIR}/ChangeLog
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
     install(FILES ${CMAKE_BINARY_DIR}/ChangeLog DESTINATION ${CMAKE_INSTALL_DOCDIR})

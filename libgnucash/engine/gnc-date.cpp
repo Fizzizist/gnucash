@@ -241,7 +241,7 @@ gnc_timegm (struct tm* time)
         *time = static_cast<struct tm>(gncdt);
         time->tm_sec -= gncdt.offset();
         normalize_struct_tm(time);
-#ifdef HAVE_STRUcT_TM_GMTOFF
+#ifdef HAVE_STRUCT_TM_GMTOFF
         time->tm_gmtoff = 0;
 #endif
         return static_cast<time64>(gncdt) - gncdt.offset();
@@ -409,7 +409,7 @@ time64CanonicalDayTime (time64 t)
     return gnc_mktime (&tm);
 }
 
-/* NB: month is 1-12, year is 0001 - 9999. */
+/* NB: month is 0-11, year is 0001 - 9999. */
 int gnc_date_get_last_mday (int month, int year)
 {
     static int last_day_of_month[12] =
