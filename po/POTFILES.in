@@ -150,6 +150,7 @@ gnucash/gnome-utils/dialog-utils.c
 gnucash/gnome-utils/gnc-account-sel.c
 gnucash/gnome-utils/gnc-amount-edit.c
 gnucash/gnome-utils/gnc-autosave.c
+gnucash/gnome-utils/gnc-cell-renderer-label.c
 gnucash/gnome-utils/gnc-cell-renderer-text-flag.c
 gnucash/gnome-utils/gnc-cell-renderer-text-view.c
 gnucash/gnome-utils/gnc-cell-view.c
@@ -356,7 +357,6 @@ gnucash/import-export/import-match-picker.cpp
 gnucash/import-export/import-parse.cpp
 gnucash/import-export/import-pending-matches.cpp
 gnucash/import-export/import-settings.cpp
-gnucash/import-export/import-utilities.cpp
 gnucash/import-export/log-replay/gnc-log-replay.cpp
 gnucash/import-export/log-replay/gnc-plugin-log-replay.c
 gnucash/import-export/ofx/gncmod-ofx-import.c

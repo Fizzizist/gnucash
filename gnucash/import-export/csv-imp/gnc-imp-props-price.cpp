@@ -41,6 +41,7 @@
 #include <boost/regex/icu.hpp>
 #include <gnc-locale-utils.hpp>
 #include "gnc-imp-props-price.hpp"
+#include <ctre.hpp>
 
 namespace bl = boost::locale;
 
@@ -65,10 +66,11 @@ std::map<GncPricePropType, const char*> gnc_price_col_type_strs = {
 GncNumeric parse_amount_price (const std::string &str, int currency_format)
 {
     /* If a cell is empty or just spaces return invalid amount */
-    if(!boost::regex_search(str, boost::regex("[0-9]")))
+    static constexpr ctll::fixed_string digit_re{"[0-9]"};
+    if(!ctre::search<digit_re>(str))
         throw std::invalid_argument (_("Value doesn't appear to contain a valid number."));
 
-    auto expr = boost::make_u32regex("[[:Sc:]]");
+    static const auto expr = boost::make_u32regex("[[:Sc:]]");
     std::string str_no_symbols;
     boost::u32regex_replace(icu::UnicodeString::fromUTF8(str), expr, "").toUTF8String(str_no_symbols);
 

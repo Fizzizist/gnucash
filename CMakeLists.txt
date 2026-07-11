@@ -21,7 +21,7 @@ if (POLICY CMP0177)
 endif()
 
 project (gnucash
-    VERSION 5.15
+    VERSION 5.16
 )
 
 enable_testing()
@@ -605,7 +605,7 @@ if (Boost_FOUND)
  if (Boost_VERSION VERSION_LESS "1.89.0")
   find_package(Boost 1.67.0  COMPONENTS date_time filesystem locale program_options regex system)
  else()
-  find_package(Boost 1.67.0  COMPONENTS date_time filesystem locale program_options regex)
+  find_package(Boost 1.67.0  COMPONENTS atomic charconv chrono container date_time filesystem locale program_options regex thread)
  endif()
 endif()
 
@@ -900,6 +900,7 @@ endif()
 
 # The subdirectories
 add_subdirectory (borrowed)
+add_library(ctre_global ALIAS ctre)
 add_subdirectory (data)
 add_subdirectory (doc)
 # Note: po should be processed before gnucash - it provides LINGUAS, used to generate desktop and appdata files

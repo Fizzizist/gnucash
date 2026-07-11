@@ -52,6 +52,7 @@ target_include_directories(gnc-core-utils
 target_link_libraries(gnc-core-utils
     PUBLIC
 	PkgConfig::GLIB2
+        ctre
     PRIVATE
         ${Boost_LIBRARIES}
         ${GOBJECT_LDFLAGS}
